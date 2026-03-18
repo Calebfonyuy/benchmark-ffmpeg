@@ -1,0 +1,168 @@
+diff --git a/fftools/ffmpeg_dec.c b/fftools/ffmpeg_dec.c
+index 1d7158f..c9b1063 100644
+--- a/fftools/ffmpeg_dec.c
++++ b/fftools/ffmpeg_dec.c
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include <stdbit.h>
++#include <time.h>
+ 
+ #include "libavutil/avassert.h"
+ #include "libavutil/avstring.h"
+@@ -36,6 +37,46 @@
+ 
+ #include "ffmpeg.h"
+ 
++/* ---- FFBENCH: per-packet decode timing -------------------------------- */
++static FILE *ffbench_dec_fp   = NULL;
++static int    ffbench_dec_init = 0;
++
++static void ffbench_dec_open(void)
++{
++    const char *path;
++    if (ffbench_dec_init)
++        return;
++    ffbench_dec_init = 1;
++    path = getenv("FFBENCH_CSV");
++    if (!path)
++        return;
++    ffbench_dec_fp = fopen(path, "a");
++    if (ffbench_dec_fp) {
++        fseek(ffbench_dec_fp, 0, SEEK_END);
++        if (ftell(ffbench_dec_fp) == 0)
++            fprintf(ffbench_dec_fp,
++                    "op,codec,width,height,frame_num,elapsed_ns\n");
++    }
++}
++
++static inline int64_t ffbench_dec_now_ns(void)
++{
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
++}
++
++__attribute__((destructor))
++static void ffbench_dec_close(void)
++{
++    if (ffbench_dec_fp) {
++        fclose(ffbench_dec_fp);
++        ffbench_dec_fp = NULL;
++    }
++}
++/* ---- end FFBENCH ------------------------------------------------------ */
++
++
+ typedef struct DecoderPriv {
+     Decoder             dec;
+ 
+@@ -721,6 +762,10 @@ static int packet_decode(DecoderPriv *dp, AVPacket *pkt, AVFrame *frame)
+         fd->wallclock[LATENCY_PROBE_DEC_PRE] = av_gettime_relative();
+     }
+ 
++
++    ffbench_dec_open();
++    int64_t _ffbench_t0 = ffbench_dec_fp ? ffbench_dec_now_ns() : 0;
++
+     ret = avcodec_send_packet(dec, pkt);
+     if (ret < 0 && !(ret == AVERROR_EOF && !pkt)) {
+         // In particular, we don't expect AVERROR(EAGAIN), because we read all
+@@ -753,6 +798,13 @@ static int packet_decode(DecoderPriv *dp, AVPacket *pkt, AVFrame *frame)
+ 
+         if (ret == AVERROR(EAGAIN)) {
+             av_assert0(pkt); // should never happen during flushing
++            if (ffbench_dec_fp && pkt) {
++                int64_t _ffbench_t1 = ffbench_dec_now_ns();
++                fprintf(ffbench_dec_fp,
++                        "decode,%s,%d,%d,%" PRIu64 ",%" PRId64 "\n",
++                        dec->codec->name, dec->width, dec->height,
++                        (uint64_t)dp->dec.frames_decoded, _ffbench_t1 - _ffbench_t0);
++            }
+             return 0;
+         } else if (ret == AVERROR_EOF) {
+             return ret;
+diff --git a/fftools/ffmpeg_enc.c b/fftools/ffmpeg_enc.c
+index a46af4d..d02ebed 100644
+--- a/fftools/ffmpeg_enc.c
++++ b/fftools/ffmpeg_enc.c
+@@ -18,6 +18,7 @@
+ 
+ #include <math.h>
+ #include <stdint.h>
++#include <time.h>
+ 
+ #include "ffmpeg.h"
+ 
+@@ -38,6 +39,46 @@
+ 
+ #include "libavcodec/avcodec.h"
+ 
++/* ---- FFBENCH: per-frame encode timing --------------------------------- */
++static FILE *ffbench_enc_fp   = NULL;
++static int    ffbench_enc_init = 0;
++
++static void ffbench_enc_open(void)
++{
++    const char *path;
++    if (ffbench_enc_init)
++        return;
++    ffbench_enc_init = 1;
++    path = getenv("FFBENCH_CSV");
++    if (!path)
++        return;
++    ffbench_enc_fp = fopen(path, "a");
++    if (ffbench_enc_fp) {
++        fseek(ffbench_enc_fp, 0, SEEK_END);
++        if (ftell(ffbench_enc_fp) == 0)
++            fprintf(ffbench_enc_fp,
++                    "op,codec,width,height,frame_num,elapsed_ns\n");
++    }
++}
++
++static inline int64_t ffbench_now_ns(void)
++{
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
++}
++
++__attribute__((destructor))
++static void ffbench_enc_close(void)
++{
++    if (ffbench_enc_fp) {
++        fclose(ffbench_enc_fp);
++        ffbench_enc_fp = NULL;
++    }
++}
++/* ---- end FFBENCH ------------------------------------------------------ */
++
++
+ typedef struct EncoderPriv {
+     Encoder        e;
+ 
+@@ -638,6 +679,10 @@ static int encode_frame(OutputFile *of, OutputStream *ost, AVFrame *frame,
+             enc->sample_aspect_ratio = frame->sample_aspect_ratio;
+     }
+ 
++
++    ffbench_enc_open();
++    int64_t _ffbench_t0 = ffbench_enc_fp ? ffbench_now_ns() : 0;
++
+     update_benchmark(NULL);
+ 
+     ret = avcodec_send_frame(enc, frame);
+@@ -664,6 +709,13 @@ static int encode_frame(OutputFile *of, OutputStream *ost, AVFrame *frame,
+ 
+         if (ret == AVERROR(EAGAIN)) {
+             av_assert0(frame); // should never happen during flushing
++            if (ffbench_enc_fp && frame) {
++                int64_t _ffbench_t1 = ffbench_now_ns();
++                fprintf(ffbench_enc_fp,
++                        "encode,%s,%d,%d,%" PRIu64 ",%" PRId64 "\n",
++                        enc->codec->name, enc->width, enc->height,
++                        (uint64_t)e->frames_encoded, _ffbench_t1 - _ffbench_t0);
++            }
+             return 0;
+         } else if (ret < 0) {
+             if (ret != AVERROR_EOF)

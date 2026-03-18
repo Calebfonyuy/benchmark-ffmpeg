@@ -18,6 +18,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "ffmpeg.h"
 
@@ -37,6 +38,46 @@
 #include "libavutil/timestamp.h"
 
 #include "libavcodec/avcodec.h"
+
+/* ---- FFBENCH: per-frame encode timing --------------------------------- */
+static FILE *ffbench_enc_fp   = NULL;
+static int    ffbench_enc_init = 0;
+
+static void ffbench_enc_open(void)
+{
+    const char *path;
+    if (ffbench_enc_init)
+        return;
+    ffbench_enc_init = 1;
+    path = getenv("FFBENCH_CSV");
+    if (!path)
+        return;
+    ffbench_enc_fp = fopen(path, "a");
+    if (ffbench_enc_fp) {
+        fseek(ffbench_enc_fp, 0, SEEK_END);
+        if (ftell(ffbench_enc_fp) == 0)
+            fprintf(ffbench_enc_fp,
+                    "op,codec,width,height,frame_num,elapsed_ns\n");
+    }
+}
+
+static inline int64_t ffbench_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+__attribute__((destructor))
+static void ffbench_enc_close(void)
+{
+    if (ffbench_enc_fp) {
+        fclose(ffbench_enc_fp);
+        ffbench_enc_fp = NULL;
+    }
+}
+/* ---- end FFBENCH ------------------------------------------------------ */
+
 
 typedef struct EncoderPriv {
     Encoder        e;
@@ -645,6 +686,10 @@ static int encode_frame(OutputFile *of, OutputStream *ost, AVFrame *frame,
             enc->sample_aspect_ratio = frame->sample_aspect_ratio;
     }
 
+
+    ffbench_enc_open();
+    int64_t _ffbench_t0 = ffbench_enc_fp ? ffbench_now_ns() : 0;
+
     update_benchmark(NULL);
 
     ret = avcodec_send_frame(enc, frame);
@@ -671,6 +716,13 @@ static int encode_frame(OutputFile *of, OutputStream *ost, AVFrame *frame,
 
         if (ret == AVERROR(EAGAIN)) {
             av_assert0(frame); // should never happen during flushing
+            if (ffbench_enc_fp && frame) {
+                int64_t _ffbench_t1 = ffbench_now_ns();
+                fprintf(ffbench_enc_fp,
+                        "encode,%s,%d,%d,%" PRIu64 ",%" PRId64 "\n",
+                        enc->codec->name, enc->width, enc->height,
+                        (uint64_t)e->frames_encoded, _ffbench_t1 - _ffbench_t0);
+            }
             return 0;
         } else if (ret < 0) {
             if (ret != AVERROR_EOF)
