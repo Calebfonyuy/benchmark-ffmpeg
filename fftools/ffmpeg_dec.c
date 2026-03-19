@@ -47,7 +47,7 @@ static void ffbench_dec_open(void)
     if (ffbench_dec_init)
         return;
     ffbench_dec_init = 1;
-    path = getenv("FFBENCH_CSV");
+    path = getenv("FFBENCH_DCSV");
     if (!path)
         return;
     ffbench_dec_fp = fopen(path, "a");

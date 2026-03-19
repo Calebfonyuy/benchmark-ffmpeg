@@ -49,7 +49,7 @@ static void ffbench_enc_open(void)
     if (ffbench_enc_init)
         return;
     ffbench_enc_init = 1;
-    path = getenv("FFBENCH_CSV");
+    path = getenv("FFBENCH_ECSV");
     if (!path)
         return;
     ffbench_enc_fp = fopen(path, "a");
